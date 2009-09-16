@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeSynonymInstances, TypeFamilies #-}
+{-# LANGUAGE TypeSynonymInstances, TypeFamilies, FlexibleInstances #-}
 module TAG where 
 import Control.Monad (liftM, ap)
 import Sentence
@@ -13,7 +13,10 @@ import NLP.Semiring
 import NLP.Semiring.Derivation
 import NLP.FSM.Simple
 import NLP.Probability.ConditionalDistribution
-
+import NLP.ChartParse
+import NLP.ChartParse.Eisner
+import Debug.Trace
+import Debug.Trace.Helpers
 
 import qualified Data.Map as M
 
@@ -108,6 +111,31 @@ instance Show Spine where
     show (Spine nts) = intercalate "+" $ ["*"] ++ map show nts
 
 data TAGSentence semi = TAGSentence (Sentence semi (GWord, Spine)) (Dependency Int)
+                      deriving (Show)
+instance (Arbitrary (TAGSentence TAGCountSemi)) where 
+    arbitrary = do
+      sent <- listOf1 arbitrary
+      let tsent = mkTagWords sent 
+      dep <- arbDepMap (sentenceLength tsent) (pickAdjInd tsent)
+      return $ TAGSentence tsent dep
+          where pickAdjInd sent i = do 
+                  let (_, Spine sp) = getWord sent i
+                  choose (0,length sp -1)
+
+directCounts (TAGSentence sent dep) =
+    TAGTrainingCounts (spineCounts, adjCounts) 
+        where
+          adjCounts = 
+              mconcat $
+              map (\(i, DEdge j info) -> 
+                       mkAdjunction (getWord sent j) (getWord sent i) (j, DEdge i info)) $ 
+              map (\i -> (i, getHead dep i)) [1..n]
+          spineCounts = 
+              mconcat $ 
+              map (\((word), spine) -> 
+                       singletonObservation spine word) $ 
+              map (getWord sent) [1..n]
+          n = sentenceLength sent
 
 type TAGFSM semi = GraphWFSM Int (GWord, Spine) semi
 type GetSemi word edge semi =  word -> word -> (Int, DEdge edge)  -> semi
@@ -121,13 +149,24 @@ tagSentenceFSMs (TAGSentence sent dep) mkSemi =
     flattenDep dep
 
 mkTagDepDerivation :: GetSemi TAGWord Int TAGCountSemi
-mkTagDepDerivation ((headWord, headPos), headSpine)  (childWord, childSpine) (head, DEdge child pos )  =
+mkTagDepDerivation w1 w2 edge  =
     mkDerivation $ TAGTrainingCounts 
-                     (mempty, 
-                      singletonObservation (childWord, -- r 
-                                            top childSpine) -- R,  
-                                           (getNonTerm pos headSpine, -- H
-                                            abs (head -child) == 1, -- delta
-                                            headPos, --t
-                                            headWord)) -- w
+                     (mempty,
+                      mkAdjunction w1 w2 edge 
+                     ) -- w
 
+mkAdjunction ((headWord, headPos), headSpine)  (childWord, childSpine) (head, DEdge child pos )  =
+    singletonObservation (childWord, -- r 
+                          top childSpine) -- R,  
+                             (getNonTerm pos headSpine, -- H
+                              abs (head -child) == 1, -- delta
+                              headPos, --t
+                              headWord)
+    
+prop_directCheck tagsent = --trace ((show finalSemi) ++ "\n\n" ++ (show $ directCounts tagsent))  $  
+    (directCounts tagsent == fromDerivation finalSemi)
+    where types = tagsent:: (TAGSentence (Derivation TAGTrainingCounts)) 
+          (TAGSentence sent _) = tagsent 
+          fsms = tagSentenceFSMs tagsent mkTagDepDerivation
+          getFSM i word = fsms !! (i-1)
+          (Just finalSemi, _) = eisnerParse getFSM sent

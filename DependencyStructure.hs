@@ -41,13 +41,15 @@ instance (Eq a) => Ord (DEdge a) where
 instance (Arbitrary a ) => Arbitrary (Dependency a) where     
     arbitrary = do 
       n <- choose (1,50)
-      arbDepMap n
+      arbDepMap n (const arbitrary)
 
 
-arbDepMap :: (Arbitrary info) => Int -> Gen (Dependency info)      
-arbDepMap n = do       
+getHead (Dependency m) i = (M.!) m  i 
+
+arbDepMap :: (Arbitrary info) => Int -> (Int -> Gen info) -> Gen (Dependency info)      
+arbDepMap n arbInfo = do       
     start <- choose (1,n)
-    info <- arbitrary
+    info <- arbInfo (n+1)
     heads <- findHeads (1, start, n)
     return $ Dependency $ M.fromList $ (start, DEdge (n+1) info) : heads 
         where  
@@ -57,14 +59,14 @@ arbDepMap n = do
               where chooseHead (i, j) = do 
                       head <- choose (i,j)
                       return (i,head,j)
-          findHeads :: (Arbitrary a) => (Int, Int, Int) -> Gen [(Int, DEdge a)] 
+--          findHeads :: (Arbitrary a) => (Int, Int, Int) -> Gen [(Int, DEdge info)] 
           findHeads  (l, cur, r) = do
                 left <- chooseCouple (l, cur-1)
-                leftInfo <- arbitrary
+                leftInfo <- arbInfo cur
                 leftHeads <- mapM findHeads left
                 
                 right <- chooseCouple (cur+1, r)
-                rightInfo <- arbitrary
+                rightInfo <- arbInfo cur
                 rightHeads <- mapM findHeads right
 
                 return $ map (\(_,lcur,_) -> (lcur, DEdge cur leftInfo)) left ++ 
